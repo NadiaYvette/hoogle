@@ -1,4 +1,4 @@
-{-# LANGUAGE PatternGuards, ViewPatterns, CPP, ScopedTypeVariables #-}
+{-# LANGUAGE RecordWildCards, PatternGuards, ViewPatterns, CPP, ScopedTypeVariables #-}
 
 module General.Util(
     PkgName, ModName,
@@ -34,6 +34,7 @@ import Data.Char
 import Data.Either.Extra
 import Data.Semigroup
 import Data.Tuple.Extra
+import Data.Word
 import Control.Monad.Extra
 import qualified Data.ByteString.Lazy as LBS
 import qualified Data.Map as Map
@@ -68,48 +69,46 @@ type URL = String
 #define RTS_STATS 1
 #endif
 
-showMb :: (Show a, Integral a) => a -> String
-#if RTS_STATS
-showMb x = show (x `div` (1024*1024)) ++ "Mb"
-#else
-showMb x = show x ++ "Mb"
-#endif
-
+mb :: Integral a => a -> a
+mb = (`div` (1024 ^ 2))
 
 #if RTS_STATS
-withRTSStats :: (RTSStats -> a) -> IO (Maybe a)
-withRTSStats f = ifM getRTSStatsEnabled (Just . f <$> getRTSStats) (pure Nothing)
+getHoogleStats :: IO (RTSStats, (Word64, Word64))
+getHoogleStats = getRTSStats >>= \st@RTSStats {..} ->
+  pure (st, (mb $ gcdetails_live_bytes gc, mb max_mem_in_use_bytes))
 #else
-withGCStats :: (GCStats -> a) -> IO (Maybe a)
-withGCStats f = ifM getGCStatsEnabled (Just . f <$> getGCStats) (pure Nothing)
+getHoogleStats :: IO (GCStats, (Word64, Word64))
+getHoogleStats = getGCStats >>= \st@GCStats {..} ->
+  pure (st, (mb currentBytesUsed, peakMegabytesAllocated))
 #endif
 
-getStatsCurrentLiveBytes :: IO (Maybe String)
-getStatsCurrentLiveBytes = do
-    performGC
 #if RTS_STATS
-    withRTSStats $ showMb . gcdetails_live_bytes . gc
+getHoogleStatsEnabled :: IO Bool
+getHoogleStatsEnabled = getRTSStatsEnabled
 #else
-    withGCStats $ showMb . currentBytesUsed
+getHoogleStatsEnabled :: IO Bool
+getHoogleStatsEnabled = getGCStatsEnabled
 #endif
 
-getStatsPeakAllocBytes :: IO (Maybe String)
-getStatsPeakAllocBytes = do
-#if RTS_STATS
-    withRTSStats $ showMb . max_mem_in_use_bytes
-#else
-    withGCStats $ showMb . peakMegabytesAllocated
-#endif
+dump :: Show a => a -> String
+dump = replace ", " "\n" . takeWhile (/= '}') . drop1 . dropWhile (/= '{') . show
 
 getStatsDebug :: IO (Maybe String)
-getStatsDebug = do
-    let dump = replace ", " "\n" . takeWhile (/= '}') . drop1 . dropWhile (/= '{') . show
-#if RTS_STATS
-    withRTSStats dump
-#else
-    withGCStats dump
-#endif
+getStatsDebug = whenMaybeM getHoogleStatsEnabled $ dump . fst <$> getHoogleStats
 
+showHoogleStats :: Show a => (a, a) -> (String, String)
+showHoogleStats = join (***) $ (<> "Mb") . show
+
+getHoogleStatsPair :: IO (Maybe (String, String))
+getHoogleStatsPair = do
+  performGC
+  whenMaybeM getHoogleStatsEnabled $ showHoogleStats . snd <$> getHoogleStats
+
+getStatsCurrentLiveBytes :: IO (Maybe String)
+getStatsCurrentLiveBytes = fmap fst <$> getHoogleStatsPair
+
+getStatsPeakAllocBytes :: IO (Maybe String)
+getStatsPeakAllocBytes = fmap snd <$> getHoogleStatsPair
 
 
 exitFail :: String -> IO ()
